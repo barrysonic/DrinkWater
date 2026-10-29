@@ -4,63 +4,54 @@ struct ContentView: View {
     @AppStorage("dailyGoal") private var dailyGoal = 2500
     @AppStorage("consumedWater") private var consumedWater = 0
     @AppStorage("trackingDay") private var trackingDay = ""
+    @AppStorage("lastWaterAmount") private var lastWaterAmount = 0
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showingAmount = false
+    @State private var showingGoal = false
+    @State private var customAmount = ""
+    @State private var feedbackTrigger = 0
+    @ScaledMetric private var ringSize = 240
 
+    private var remaining: Int { max(dailyGoal - consumedWater, 0) }
     private var progress: Double {
         min(Double(consumedWater) / Double(max(dailyGoal, 1)), 1)
+    }
+    private var validAmount: Int? {
+        guard let amount = Int(customAmount), (1...5000).contains(amount) else { return nil }
+        return amount
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 28) {
-                    ZStack {
-                        Circle().stroke(.blue.opacity(0.15), lineWidth: 20)
-                        Circle()
-                            .trim(from: 0, to: progress)
-                            .stroke(.blue, style: StrokeStyle(lineWidth: 20, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                        VStack(spacing: 8) {
-                            Image(systemName: "drop.fill")
-                                .font(.largeTitle).foregroundStyle(.blue)
-                            Text("\(consumedWater) ml").font(.largeTitle.bold())
-                            Text("z \(dailyGoal) ml").foregroundStyle(.secondary)
+                VStack(spacing: 24) {
+                    header
+                    progressCard
+                    quickAdd
+                    if lastWaterAmount > 0 {
+                        Button(action: undoLastEntry) {
+                            Label("Cofnij ostatnie \(lastWaterAmount) ml", systemImage: "arrow.uturn.backward")
+                                .font(.subheadline)
+                                .frame(minHeight: 44)
                         }
                     }
-                    .frame(width: 250, height: 250)
-                    .padding(.top, 20)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Wypito \(consumedWater) z \(dailyGoal) mililitrów")
-
-                    Text(consumedWater >= dailyGoal ? "Dzienny cel osiągnięty!" : "Czas na łyk wody")
-                        .font(.title2.bold())
-
-                    HStack(spacing: 12) {
-                        ForEach([150, 250, 500], id: \.self) { amount in
-                            Button {
-                                refreshDay()
-                                withAnimation { consumedWater += amount }
-                            } label: {
-                                Text("+\(amount) ml")
-                                    .font(.headline)
-                                    .frame(maxWidth: .infinity, minHeight: 48)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .accessibilityLabel("Dodaj \(amount) mililitrów wody")
-                        }
-                    }
-
-                    GroupBox("Twój dzienny cel") {
-                        Stepper("\(dailyGoal) ml", value: $dailyGoal, in: 500...5000, step: 250)
-                            .padding(.vertical, 8)
-                    }
-                    Text("Ustaw cel odpowiedni dla siebie. Potrzeby nawodnienia są indywidualne.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    goalCard
+                    Text("Każdy łyk się liczy. Ustaw cel odpowiedni dla siebie — potrzeby nawodnienia są indywidualne.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
                 }
-                .padding(24)
+                .padding(20)
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("DrinkWater")
+            .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showingAmount) { amountSheet }
+            .sheet(isPresented: $showingGoal) { goalSheet }
         }
+        .tint(.cyan)
+        .sensoryFeedback(.success, trigger: feedbackTrigger)
         .onAppear(perform: refreshDay)
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { refreshDay() }
@@ -74,11 +65,186 @@ struct ContentView: View {
         }
     }
 
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(Date.now, format: .dateTime.weekday(.wide).day().month(.wide))
+                .font(.subheadline).foregroundStyle(.secondary)
+            Text("Zadbaj o swoje nawodnienie")
+                .font(.largeTitle.bold())
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var progressCard: some View {
+        VStack(spacing: 22) {
+            ZStack {
+                Circle().stroke(.cyan.opacity(0.12), lineWidth: 18)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(
+                        AngularGradient(colors: [.cyan, .blue, .cyan], center: .center),
+                        style: StrokeStyle(lineWidth: 18, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                VStack(spacing: 6) {
+                    Image(systemName: remaining == 0 ? "checkmark.circle.fill" : "drop.fill")
+                        .font(.title).foregroundStyle(.cyan)
+                    Text("\(consumedWater)").font(.system(.largeTitle, design: .rounded, weight: .bold))
+                        .contentTransition(.numericText())
+                    Text("z \(dailyGoal) ml").font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(24)
+                .minimumScaleFactor(0.7)
+            }
+            .frame(width: min(ringSize, 280), height: min(ringSize, 280))
+            .padding(10)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Wypito \(consumedWater) z \(dailyGoal) mililitrów. Pozostało \(remaining) mililitrów.")
+            VStack(spacing: 5) {
+                Text(remaining == 0 ? "Cel osiągnięty!" : "Jeszcze \(remaining) ml do celu")
+                    .font(.headline)
+                Text(remaining == 0 ? "Świetna robota na dziś." : "Małe łyki, dobry nawyk.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 26)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 28))
+    }
+
+    private var quickAdd: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Dodaj wodę").font(.title2.bold())
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { portionButtons }
+                VStack(spacing: 12) { portionButtons }
+            }
+            Button {
+                customAmount = ""
+                showingAmount = true
+            } label: {
+                Label("Własna ilość", systemImage: "plus")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var portionButtons: some View {
+        ForEach([150, 250, 500], id: \.self) { amount in
+            Button { addWater(amount) } label: {
+                VStack(spacing: 8) {
+                    Image(systemName: amount == 500 ? "waterbottle.fill" : "drop.fill")
+                        .font(.title2)
+                    Text("+\(amount) ml").font(.headline).fixedSize()
+                }
+                .frame(maxWidth: .infinity, minHeight: 88)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityLabel("Dodaj \(amount) mililitrów wody")
+        }
+    }
+
+    private var goalCard: some View {
+        Button { showingGoal = true } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "target").font(.title2).foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Dzienny cel").font(.subheadline).foregroundStyle(.secondary)
+                    Text("\(dailyGoal) ml").font(.headline)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .padding(20)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Zmień dzienny cel nawodnienia")
+    }
+
+    private var amountSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Ile wody wypito?") {
+                    HStack {
+                        TextField("Np. 300", text: $customAmount)
+                            .keyboardType(.numberPad)
+                            .accessibilityLabel("Ilość wody w mililitrach")
+                        Text("ml").foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    Button("Dodaj wodę") {
+                        guard let amount = validAmount else { return }
+                        addWater(amount)
+                        showingAmount = false
+                    }
+                    .disabled(validAmount == nil)
+                } footer: {
+                    Text("Wpisz pełną liczbę od 1 do 5000 ml.")
+                }
+            }
+            .navigationTitle("Własna ilość")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Anuluj") { showingAmount = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var goalSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Twój cel") {
+                    Stepper("\(dailyGoal) ml", value: $dailyGoal, in: 500...5000, step: 250)
+                }
+                Section {
+                    Text("Dopasuj cel do swoich potrzeb i zaleceń lekarza. Zmiana celu nie usuwa wypitej dziś wody.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Dzienny cel")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Gotowe") { showingGoal = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func addWater(_ amount: Int) {
+        refreshDay()
+        withAnimation(.easeInOut(duration: 0.3)) {
+            consumedWater += amount
+            lastWaterAmount = amount
+        }
+        feedbackTrigger += 1
+    }
+
+    private func undoLastEntry() {
+        refreshDay()
+        guard lastWaterAmount > 0 else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            consumedWater = max(consumedWater - lastWaterAmount, 0)
+            lastWaterAmount = 0
+        }
+    }
+
     private func refreshDay() {
         let parts = Calendar.current.dateComponents([.year, .month, .day], from: Date())
         let today = "\(parts.year ?? 0)-\(parts.month ?? 0)-\(parts.day ?? 0)"
         guard trackingDay != today else { return }
         consumedWater = 0
+        lastWaterAmount = 0
         trackingDay = today
     }
 }
