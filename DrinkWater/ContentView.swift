@@ -6,9 +6,9 @@ struct ContentView: View {
     @AppStorage("trackingDay") private var trackingDay = ""
     @AppStorage("lastWaterAmount") private var lastWaterAmount = 0
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showingAmount = false
+    @StateObject private var reminders = WaterReminders()
+    @Environment(\.openURL) private var openURL
     @State private var showingGoal = false
-    @State private var customAmount = ""
     @State private var feedbackTrigger = 0
     @ScaledMetric private var ringSize = 240
 
@@ -16,11 +16,6 @@ struct ContentView: View {
     private var progress: Double {
         min(Double(consumedWater) / Double(max(dailyGoal, 1)), 1)
     }
-    private var validAmount: Int? {
-        guard let amount = Int(customAmount), (1...5000).contains(amount) else { return nil }
-        return amount
-    }
-
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -30,11 +25,12 @@ struct ContentView: View {
                     quickAdd
                     if lastWaterAmount > 0 {
                         Button(action: undoLastEntry) {
-                            Label("Cofnij ostatnie \(lastWaterAmount) ml", systemImage: "arrow.uturn.backward")
+                            Label("Cofnij ostatnie dodanie", systemImage: "arrow.uturn.backward")
                                 .font(.subheadline)
                                 .frame(minHeight: 44)
                         }
                     }
+                    remindersCard
                     goalCard
                     Text("Każdy łyk się liczy. Ustaw cel odpowiedni dla siebie — potrzeby nawodnienia są indywidualne.")
                         .font(.footnote)
@@ -47,16 +43,19 @@ struct ContentView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("DrinkWater")
             .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showingAmount) { amountSheet }
             .sheet(isPresented: $showingGoal) { goalSheet }
         }
         .tint(.cyan)
         .sensoryFeedback(.success, trigger: feedbackTrigger)
         .onAppear(perform: refreshDay)
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { refreshDay() }
+            if phase == .active {
+                refreshDay()
+                Task { await reminders.refresh() }
+            }
         }
         .task {
+            await reminders.refresh()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(30)) }
                 catch { return }
@@ -114,37 +113,48 @@ struct ContentView: View {
     }
 
     private var quickAdd: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Dodaj wodę").font(.title2.bold())
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { portionButtons }
-                VStack(spacing: 12) { portionButtons }
-            }
-            Button {
-                customAmount = ""
-                showingAmount = true
-            } label: {
-                Label("Własna ilość", systemImage: "plus")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, minHeight: 48)
-            }
-            .buttonStyle(.bordered)
+        Button { addWater(250) } label: {
+            Label("Wypiłem szklankę", systemImage: "mug.fill")
+                .font(.headline)
+                .frame(maxWidth: .infinity, minHeight: 60)
         }
+        .buttonStyle(.borderedProminent)
+        .accessibilityHint("Dodaje jedną szklankę, czyli 250 mililitrów wody")
     }
 
-    private var portionButtons: some View {
-        ForEach([150, 250, 500], id: \.self) { amount in
-            Button { addWater(amount) } label: {
-                VStack(spacing: 8) {
-                    Image(systemName: amount == 500 ? "waterbottle.fill" : "drop.fill")
-                        .font(.title2)
-                    Text("+\(amount) ml").font(.headline).fixedSize()
-                }
-                .frame(maxWidth: .infinity, minHeight: 88)
+    private var remindersCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle(isOn: Binding(
+                get: { reminders.isEnabled },
+                set: { enabled in Task { await reminders.setEnabled(enabled) } }
+            )) {
+                Label("Przypomnienia co 2 godziny", systemImage: "bell.badge.fill")
+                    .font(.headline)
             }
-            .buttonStyle(.borderedProminent)
-            .accessibilityLabel("Dodaj \(amount) mililitrów wody")
+            .disabled(reminders.isBusy)
+            Text("Codziennie: 8:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00 i 22:00. W nocy cisza.")
+                .font(.footnote).foregroundStyle(.secondary)
+            if reminders.isBusy {
+                ProgressView("Ustawianie przypomnień…")
+                    .font(.footnote)
+            }
+            if let message = reminders.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+                    .accessibilityLabel(message)
+            }
+            if reminders.needsSettings {
+                Button("Otwórz ustawienia powiadomień") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        openURL(url)
+                    }
+                }
+                .frame(minHeight: 44)
+            }
+            Text("Dźwięk zależy od ustawień iPhone’a, trybu cichego i trybu skupienia.")
+                .font(.caption).foregroundStyle(.secondary)
         }
+        .padding(20)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
     }
 
     private var goalCard: some View {
@@ -164,39 +174,6 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("Zmień dzienny cel nawodnienia")
-    }
-
-    private var amountSheet: some View {
-        NavigationStack {
-            Form {
-                Section("Ile wody wypito?") {
-                    HStack {
-                        TextField("Np. 300", text: $customAmount)
-                            .keyboardType(.numberPad)
-                            .accessibilityLabel("Ilość wody w mililitrach")
-                        Text("ml").foregroundStyle(.secondary)
-                    }
-                }
-                Section {
-                    Button("Dodaj wodę") {
-                        guard let amount = validAmount else { return }
-                        addWater(amount)
-                        showingAmount = false
-                    }
-                    .disabled(validAmount == nil)
-                } footer: {
-                    Text("Wpisz pełną liczbę od 1 do 5000 ml.")
-                }
-            }
-            .navigationTitle("Własna ilość")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Anuluj") { showingAmount = false }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
     }
 
     private var goalSheet: some View {
